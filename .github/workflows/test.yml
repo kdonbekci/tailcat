@@ -60,6 +60,9 @@ jobs:
       - name: build Swift release with warnings as errors
         working-directory: swift
         run: swift build -c release -Xswiftc -warnings-as-errors
+      - name: list Xcode schemes
+        working-directory: swift
+        run: xcodebuild -list
       - name: compile Swift for iOS devices and simulator
         working-directory: swift
         run: |
@@ -129,6 +132,11 @@ jobs:
           go-version-file: go.mod
       - name: build js/wasm
         run: go build -o /tmp/tailcat-web.wasm ./web
+        env:
+          GOOS: js
+          GOARCH: wasm
+      - name: js/wasm unit tests
+        run: go test -v -count=1 -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./web/
         env:
           GOOS: js
           GOARCH: wasm
