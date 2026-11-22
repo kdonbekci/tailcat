@@ -45,6 +45,10 @@
   [#124](https://github.com/tailscale/tailcat/issues/124) and
   [#125](https://github.com/tailscale/tailcat/pull/125) by
   [@ybaelli](https://github.com/ybaelli))
+- `Server.DisconnectClient` now also discards an `AllowClient` answer
+  that was in flight when it ran, so a client revoked while the hook
+  was deciding is not admitted on the stale answer. The hook is asked
+  again when the client next retries.
 - New `tailcat perf` command and `perf` service run an iperf-like
   throughput and latency test between a client and a server, over
   TCP or UDP, in either or both directions, with one or more parallel

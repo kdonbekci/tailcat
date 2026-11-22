@@ -638,6 +638,72 @@ func TestDisconnectClient(t *testing.T) {
 	}
 }
 
+// TestDisconnectClientDuringAllowClient checks that a client whose
+// AllowClient call is in flight when DisconnectClient revokes it is not
+// admitted on the hook's stale answer, and that the hook is asked again.
+func TestDisconnectClientDuringAllowClient(t *testing.T) {
+	t.Parallel()
+
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+	reg := dm.Regions[1]
+	if reg == nil {
+		t.Fatal("no region 1 in derpmap")
+	}
+
+	k := key.NewNode()
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var revoked atomic.Bool
+	var calls atomic.Int32
+	s := &Server{Logf: mkLogger(t, "server"), Region: reg, AllowClient: func(pub key.NodePublic) bool {
+		if pub != k.Public() {
+			return false
+		}
+		if calls.Add(1) == 1 {
+			// Decide before the revocation, answer after it.
+			entered <- struct{}{}
+			<-release
+			return true
+		}
+		return !revoked.Load()
+	}}
+	t.Cleanup(func() { s.Close() })
+	if err := s.Start(); err != nil {
+		t.Fatalf("server Start: %v", err)
+	}
+
+	c := &Client{Server: s.TailcatAddr(), Key: k, Logf: mkLogger(t, "client")}
+	t.Cleanup(func() { c.Close() })
+	WaitForDERPForTest(t, s, c)
+	pinged := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, err := c.Ping(ctx)
+		pinged <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("AllowClient never called")
+	}
+	revoked.Store(true)
+	if s.DisconnectClient(k.Public()) {
+		t.Error("DisconnectClient reported a client that was still being decided as connected")
+	}
+	close(release)
+
+	if err := <-pinged; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ping after revocation = %v; want context deadline exceeded", err)
+	}
+	if _, ok := s.Status().Peer[k.Public()]; ok {
+		t.Fatal("client admitted on an AllowClient answer from before its revocation")
+	}
+	if n := calls.Load(); n < 2 {
+		t.Errorf("AllowClient called %d times; want it asked again after the revocation", n)
+	}
+}
+
 func TestUDP(t *testing.T) {
 	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
 	reg := dm.Regions[1]

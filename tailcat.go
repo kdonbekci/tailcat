@@ -391,7 +391,10 @@ type locoBackend struct {
 	mu           sync.Mutex
 	clients      map[key.NodePublic]*tailcfg.Node // for the server
 	nextClientID tailcfg.NodeID                   // for the server; never reused after a removal
-	pendingAllow map[key.NodePublic]bool          // client keys with an allowClient call in flight
+	// pendingAllow holds the client keys with an allowClient call in
+	// flight. DisconnectClient sets a pending key's value to false, so
+	// a hook that answered before the key was revoked can't admit it.
+	pendingAllow map[key.NodePublic]bool
 	nm           *netmap.NetworkMap
 	eps          []netip.AddrPort // our current local UDP endpoints, sorted
 	closeOnce    sync.Once
@@ -1042,13 +1045,19 @@ func tcpipStackOf(ns *netstack.Impl) *stack.Stack {
 //
 // Nothing stops k from connecting again, so a caller revoking a
 // client should first make [Server.AllowClient] reject it (report
-// false for the key), before disconnecting the client.
+// false for the key), before disconnecting the client. An
+// [Server.AllowClient] call for k already in flight when
+// DisconnectClient runs can't admit k: its answer is discarded and
+// the hook is asked again when the client next retries.
 func (s *Server) DisconnectClient(k key.NodePublic) bool {
 	if s.lb == nil {
 		return false // nothing is connected before Start
 	}
 	s.lb.mu.Lock()
 	defer s.lb.mu.Unlock()
+	if _, pending := s.lb.pendingAllow[k]; pending {
+		s.lb.pendingAllow[k] = false
+	}
 	return s.lb.removeClientLocked(k)
 }
 
@@ -1822,7 +1831,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool 
 		return true
 	}
 	if b.allowClient != nil {
-		if b.pendingAllow[src] {
+		if _, pending := b.pendingAllow[src]; pending {
 			// An earlier meow from src is still waiting on the
 			// hook. Drop this one; src retries once a second.
 			return false
@@ -1834,9 +1843,17 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool 
 		b.mu.Unlock()
 		allowed := b.allowClient(src)
 		b.mu.Lock()
+		current := b.pendingAllow[src]
 		delete(b.pendingAllow, src)
 		if !allowed {
 			b.logf("ignoring meow from %v: rejected by AllowClient", src.String())
+			return false
+		}
+		if !current {
+			// DisconnectClient ran while the hook was deciding, so its
+			// answer may predate the revocation. Ask again on the
+			// next meow.
+			b.logf("ignoring meow from %v: disconnected while AllowClient ran", src.String())
 			return false
 		}
 	}
