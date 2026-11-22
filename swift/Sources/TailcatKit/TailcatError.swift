@@ -78,12 +78,14 @@ struct ResourceInfo: Decodable, Sendable {
     var publicKey: String?
     var localAddress: String?
     var remoteAddress: String?
+    var peerPublicKey: String?
 
     enum CodingKeys: String, CodingKey {
         case address
         case publicKey = "public_key"
         case localAddress = "local_address"
         case remoteAddress = "remote_address"
+        case peerPublicKey = "peer_public_key"
     }
 
     var localPort: UInt16? {

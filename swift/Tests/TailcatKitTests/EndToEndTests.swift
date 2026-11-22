@@ -268,6 +268,47 @@ struct LocalRelayTests {
         }
     }
 
+    @Test func peerKeysAndDeny() async throws {
+        let server = try Self.server()
+        do {
+            let listener = try await server.listen(on: 0)
+            let address = try await server.start()
+            let identity = try Identity.generate()
+            let client = try TailcatClient(address: address, identity: identity, derpMapURL: URL(string: "none"))
+            let stranger = try TailcatClient(address: address, derpMapURL: URL(string: "none"))
+            do {
+                try await server.allow(identity.publicKey)
+                let outgoing = try await client.connect(port: listener.port)
+                let incoming = try await listener.accept(timeout: .seconds(10))
+                #expect(incoming.peerKey == identity.publicKey)
+                #expect(outgoing.peerKey == server.publicKey)
+
+                // Denying the only key drops the client and admits nobody.
+                try await server.deny(identity.publicKey)
+                #expect(incoming.peerKey == identity.publicKey)
+                do { _ = try await client.connect(port: listener.port, timeout: .seconds(2)); Issue.record("denied client dialed") }
+                catch { #expect(error as? TailcatError == .timeout) }
+                do { _ = try await stranger.connect(port: listener.port, timeout: .seconds(2)); Issue.record("stranger dialed") }
+                catch { #expect(error as? TailcatError == .timeout) }
+
+                // Allowing the key again readmits it. The disconnected client
+                // still believes it is registered, so a fresh one dials.
+                try await server.allow(identity.publicKey)
+                let fresh = try TailcatClient(address: address, identity: identity, derpMapURL: URL(string: "none"))
+                do {
+                    let again = try await fresh.connect(port: listener.port, timeout: .seconds(10))
+                    let readmitted = try await listener.accept(timeout: .seconds(10))
+                    #expect(readmitted.peerKey == identity.publicKey)
+                    await again.close(); await readmitted.close()
+                } catch { await fresh.close(); throw error }
+                await fresh.close()
+                await outgoing.close(); await incoming.close()
+            } catch { await client.close(); await stranger.close(); throw error }
+            await client.close(); await stranger.close()
+        } catch { await server.close(); throw error }
+        await server.close()
+    }
+
     @Test func clientIdentityAndExpiredOperations() async throws {
         let server = try Self.server()
         do {

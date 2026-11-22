@@ -360,3 +360,46 @@ func TestE2ECloseServerRetiresTree(t *testing.T) {
 		t.Fatal("read from dead peer succeeded")
 	}
 }
+
+// TestE2EPeerPublicKeyAndDenyClient checks that the info of both ends
+// of a connection names the other's authenticated key, and that
+// denying the client keeps that name, drops the client, and leaves an
+// empty allowlist admitting nobody.
+func TestE2EPeerPublicKeyAndDenyClient(t *testing.T) {
+	x := newE2E(t)
+	ln, dialed, accepted := x.connect(TCP)
+	clientKey := x.info(x.client)["public_key"].(string)
+	serverKey := x.info(x.server)["public_key"].(string)
+	if got := x.info(accepted)["peer_public_key"]; got != clientKey {
+		t.Fatalf("accepted peer_public_key = %v; want the client's key %q", got, clientKey)
+	}
+	if got := x.info(dialed)["peer_public_key"]; got != serverKey {
+		t.Fatalf("dialed peer_public_key = %v; want the server's key %q", got, serverKey)
+	}
+	if got, ok := x.info(ln)["peer_public_key"]; ok {
+		t.Fatalf("listener info has peer_public_key %v; want none", got)
+	}
+
+	// The test server started with an empty allowlist, which admits any
+	// client; denying its only client must leave it admitting nobody.
+	if err := DenyClient(x.server, x.token(), clientKey); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if got := x.info(accepted)["peer_public_key"]; got != clientKey {
+		t.Fatalf("accepted peer_public_key after deny = %v; want %q", got, clientKey)
+	}
+	if h, err := Dial(x.client, testToken(t, 2*time.Second), x.port(ln), TCP); err == nil {
+		Close(h)
+		t.Fatal("denied client dialed the server")
+	}
+	info := x.info(x.server)
+	stranger, err := NewClient(fmt.Sprintf(`{"address":%q,"derp_map_url":"none"}`, info["address"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { Close(stranger) })
+	if h, err := Dial(stranger, testToken(t, 2*time.Second), x.port(ln), TCP); err == nil {
+		Close(h)
+		t.Fatal("a new client dialed a server whose last key was denied")
+	}
+}

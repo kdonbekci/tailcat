@@ -13,6 +13,11 @@ public final class Connection: Sendable {
     public let remoteAddress: String?
     public let localAddress: String?
     public let localPort: UInt16?
+    /// The key the tunnel authenticated the other end by: the dialing client's
+    /// for an accepted connection, the server's for a dialed one. nil when the
+    /// server did not know the remote address. It is recorded at accept time,
+    /// so it stays set after ``TailcatServer/deny(_:)``.
+    public let peerKey: NodePublicKey?
     private let handle: Handle
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -23,19 +28,29 @@ public final class Connection: Sendable {
         var pendingError: (any Error)?
     }
 
-    private init(handle: Handle, info: ResourceInfo) {
+    private init(handle: Handle, info: ResourceInfo, peerKey: NodePublicKey?) {
         self.handle = handle
         self.remoteAddress = info.remoteAddress
         self.localAddress = info.localAddress
         self.localPort = info.localPort
+        self.peerKey = peerKey
     }
 
     /// Called on a C worker. Metadata lookup can fail after a successful dial or
     /// accept, so that failure must still release the newly returned handle.
-    static func adopt(_ raw: UInt64, token: UInt64) throws -> Connection {
+    /// A connection's tc_info never blocks, so it is read with TC_NO_CANCEL: a
+    /// deadline that expires right after the dial or accept doesn't discard it.
+    static func adopt(_ raw: UInt64) throws -> Connection {
         do {
-            let info = try CAPI.info(raw, token)
-            return Connection(handle: Handle(raw), info: info)
+            let info = try CAPI.info(raw, UInt64(TC_NO_CANCEL))
+            var peerKey: NodePublicKey?
+            if let text = info.peerPublicKey {
+                guard let key = NodePublicKey(rawValue: text) else {
+                    throw TailcatError.internalError("connection peer key is not a node key")
+                }
+                peerKey = key
+            }
+            return Connection(handle: Handle(raw), info: info, peerKey: peerKey)
         } catch {
             _ = tc_close(raw, nil)
             throw error

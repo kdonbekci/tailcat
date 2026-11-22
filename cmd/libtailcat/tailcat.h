@@ -308,10 +308,15 @@ int32_t tc_conn_readable(tc_handle connection, int32_t *out, char **error);
  *
  * Client: public_key. Started server: address, local_address, public_key.
  * Listener: local_address, network. Connection: local_address, remote_address,
- * network.
+ * network, peer_public_key.
  *
  * Listener/connection endpoints use host:port (IPv6 in brackets), and network is
- * TC_TCP/TC_UDP. Server info fails before startup and contains a secret address
+ * TC_TCP/TC_UDP. A connection's peer_public_key is the text-encoded node key the
+ * tunnel authenticated its remote end by: the dialing client's key for an
+ * accepted connection, the server's key for a dialed one. An accepted
+ * connection's key is recorded at accept time, so it stays reported after
+ * tc_server_deny_client denies that client. The field is omitted when the key is
+ * unknown. Server info fails before startup and contains a secret address
  * afterwards. Release the JSON with tc_free.
  */
 int32_t tc_info(tc_handle resource, tc_token cancellation_token,
@@ -347,9 +352,27 @@ int32_t tc_client_disco_ping(tc_handle client, tc_token cancellation_token,
  *
  * The token bounds waiting for server configuration access. An empty list
  * permits any client possessing the address; the first entry restricts subsequent
- * registration to allowed keys. Does not remove keys or disconnect existing flows.
+ * registration to allowed keys. Does not remove keys or disconnect existing flows;
+ * use tc_server_deny_client for that.
  */
 int32_t tc_server_allow_client(tc_handle server, tc_token cancellation_token,
+    char *public_key, char **error);
+
+/**
+ * Remove a text-encoded public node key from server's allowlist, then
+ * disconnect that client if it is connected.
+ *
+ * Admission stays restricted to the allowlist: denying the last key admits
+ * nobody, and denying a key on a server with an empty allowlist restricts it.
+ * An admission decision for the key already in progress is discarded. The
+ * denied client's open connections and flows are not reset; they stall, so
+ * close their handles. The key may connect again only after
+ * tc_server_allow_client adds it back.
+ *
+ * The token bounds waiting for a concurrent start. The key is refused even if
+ * that wait fails; retry to finish disconnecting it.
+ */
+int32_t tc_server_deny_client(tc_handle server, tc_token cancellation_token,
     char *public_key, char **error);
 
 /**

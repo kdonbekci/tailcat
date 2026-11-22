@@ -22,7 +22,7 @@ public actor Listener {
         return try await Blocking.run(timeout: timeout) { token in
             var connection: UInt64 = 0
             try CAPI.check { tc_listener_accept(raw, token, &connection, $0) }
-            return try Connection.adopt(connection, token: token)
+            return try Connection.adopt(connection)
         }
     }
 

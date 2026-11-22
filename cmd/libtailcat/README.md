@@ -125,11 +125,18 @@ Use `TC_TCP` or `TC_UDP` and a numerical port; listen port zero chooses a free p
 `tc_client_dial` connects directly to a service port on the configured peer.
 
 `tc_info` returns JSON specific to the handle: client public key, server address
-and public key, listener local address, or connection local/remote addresses.
+and public key, listener local address, or connection local/remote addresses and
+`peer_public_key`, the node key the tunnel authenticated the connection's peer by
+(omitted when unknown).
 Server info requires startup. Endpoint strings are in host:port form (IPv6 hosts
 are bracketed). `tc_client_ping` writes relay latency to `int32_t *ping_ms` in
 whole milliseconds (fractional milliseconds are truncated). `tc_client_disco_ping`
 returns JSON with latency in seconds, endpoint, and DERP-region information.
+`tc_server_allow_client` adds a key to a server's allowlist, and
+`tc_server_deny_client` removes one and disconnects that client; admission stays
+restricted, so denying the last key admits nobody. A connection's
+`peer_public_key` is recorded when it is accepted, so it stays reported after the
+client is denied.
 `tc_drain` waits for TCP shutdown
 using the supplied token deadline, and is a no-op before startup.
 

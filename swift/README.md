@@ -125,6 +125,11 @@ a DERPRegion JSON object. The server's address is available after `start()`.
 
 The allowlist restricts subsequent registration and does not disconnect existing
 flows. Configure it before startup when access should be restricted immediately.
+`deny(_:)` removes a key and disconnects that client; the server stays restricted,
+so denying the last key admits nobody. The denied client's open connections stall
+rather than reset, so close them: `Connection.peerKey`, read from the
+connection's `tc_info` `peer_public_key`, names the authenticated client behind
+each accepted connection (and the server, on a dialed one).
 Addresses and private/pre-shared keys are secrets. The wrapper never logs them.
 `LogSink` receives Swift lifecycle messages; the C API discards Go logs.
 

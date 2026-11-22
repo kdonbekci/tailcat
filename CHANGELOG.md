@@ -49,6 +49,14 @@
   that was in flight when it ran, so a client revoked while the hook
   was deciding is not admitted on the stale answer. The hook is asked
   again when the client next retries.
+- libtailcat has a new `tc_server_deny_client` export, which removes a
+  key from a server's allowlist and disconnects that client. Admission
+  stays restricted to the allowlist, so denying the last key admits
+  nobody. A connection's `tc_info` now reports `peer_public_key`, the
+  node key the tunnel authenticated its peer by: the client's for an
+  accepted connection, recorded at accept so it survives a deny, and
+  the server's for a dialed one. TailcatKit exposes them as
+  `TailcatServer.deny(_:)` and `Connection.peerKey`.
 - New `tailcat perf` command and `perf` service run an iperf-like
   throughput and latency test between a client and a server, over
   TCP or UDP, in either or both directions, with one or more parallel

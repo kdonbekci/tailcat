@@ -42,9 +42,12 @@ type ServerConfig struct {
 }
 
 // ready records a successful first operation; DrainTCP is only valid afterwards.
+// serverKey is the key the tunnel authenticates the server by, reported as
+// the peer key of every dialed connection.
 type client struct {
-	client *tailcat.Client
-	ready  atomic.Bool
+	client    *tailcat.Client
+	serverKey key.NodePublic
+	ready     atomic.Bool
 }
 
 // allowed and restricted back the server's AllowClient hook. The C API
@@ -68,13 +71,27 @@ func (s *server) allow(k key.NodePublic) {
 	s.restricted.Store(true)
 }
 
+// deny removes k from the allowlist. Admission stays restricted to the
+// list, so removing the last key admits nobody, and denying a key on a
+// server that admitted anyone restricts it to the (empty) list.
+func (s *server) deny(k key.NodePublic) {
+	s.restricted.Store(true)
+	s.allowed.Remove(k)
+}
+
+// srv names the peers of accepted connections.
 type listener struct {
 	ln      tailcat.ContextListener
+	srv     *server
 	network int
 }
 
+// peer is the node key the tunnel authenticated the remote end by, or
+// zero when the server did not know the remote address. Info reports it
+// as peer_public_key.
 type connection struct {
 	conn net.Conn
+	peer key.NodePublic
 
 	// localAddr and remoteAddr are recorded when the connection is
 	// published. A netstack TCP connection reports a nil RemoteAddr once
@@ -124,8 +141,8 @@ func (c *connection) release() {
 	}
 }
 
-func newConnection(conn net.Conn, network int) *connection {
-	c := &connection{conn: conn, readGate: newGate(), writeGate: newGate(), network: network,
+func newConnection(conn net.Conn, network int, peer key.NodePublic) *connection {
+	c := &connection{conn: conn, peer: peer, readGate: newGate(), writeGate: newGate(), network: network,
 		stopped: make(chan struct{}), pumpDone: make(chan struct{})}
 	if la := conn.LocalAddr(); la != nil {
 		c.localAddr = la.String()
@@ -236,7 +253,7 @@ func NewClient(config string) (Handle, error) {
 	if err != nil {
 		return 0, err
 	}
-	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard}}, 0)
+	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard}, serverKey: ci.ServerPublic.NodePublic}, 0)
 }
 
 func NewServer(config string) (Handle, error) {
@@ -270,12 +287,12 @@ func NewServer(config string) (Handle, error) {
 	return register(srv, 0)
 }
 
-func publishConnection(ctx context.Context, parent Handle, conn net.Conn, network int) (Handle, error) {
+func publishConnection(ctx context.Context, parent Handle, conn net.Conn, network int, peer key.NodePublic) (Handle, error) {
 	if err := ctx.Err(); err != nil {
 		conn.Close()
 		return 0, err
 	}
-	c := newConnection(conn, network)
+	c := newConnection(conn, network, peer)
 	h, err := register(c, parent)
 	if err != nil {
 		c.close()
@@ -300,7 +317,7 @@ func Dial(id, token Handle, port uint16, network int) (result Handle, err error)
 			return err
 		}
 		c.ready.Store(true)
-		result, err = publishConnection(ctx, e.id, conn, network)
+		result, err = publishConnection(ctx, e.id, conn, network, c.serverKey)
 		return err
 	})
 	return
@@ -352,7 +369,7 @@ func Listen(id, token Handle, port uint16, network int) (result Handle, err erro
 			ln.Close()
 			return err
 		}
-		result, err = register(&listener{ln: ln.(tailcat.ContextListener), network: network}, e.id)
+		result, err = register(&listener{ln: ln.(tailcat.ContextListener), srv: s, network: network}, e.id)
 		if err != nil {
 			ln.Close()
 		}
@@ -367,7 +384,10 @@ func Accept(id, token Handle) (result Handle, err error) {
 		if err != nil {
 			return err
 		}
-		result, err = publishConnection(ctx, e.parent, conn, l.network)
+		// Name the peer now, while it is still a connected client: a
+		// later DisconnectClient makes its address unknown.
+		peer, _ := l.srv.server.PeerKey(conn.RemoteAddr())
+		result, err = publishConnection(ctx, e.parent, conn, l.network, peer)
 		return err
 	})
 	return
@@ -500,7 +520,11 @@ func Info(id, token Handle) (out string, err error) {
 		case *listener:
 			info = map[string]any{"local_address": v.ln.Addr().String(), "network": v.network}
 		case *connection:
-			info = map[string]any{"local_address": v.localAddr, "remote_address": v.remoteAddr, "network": v.network}
+			m := map[string]any{"local_address": v.localAddr, "remote_address": v.remoteAddr, "network": v.network}
+			if !v.peer.IsZero() {
+				m["peer_public_key"] = v.peer.String()
+			}
+			info = m
 		default:
 			return ErrType
 		}
@@ -546,6 +570,32 @@ func AllowClient(id, token Handle, text string) error {
 	}
 	return use[*server](id, token, func(ctx context.Context, e *entry, s *server) error {
 		s.allow(pub)
+		return nil
+	})
+}
+
+// DenyClient removes the key from the server's allowlist, then drops
+// the client if it is connected (see [tailcat.Server.DisconnectClient]).
+// Admission stays restricted, so denying the last key admits nobody. A
+// denied client's open connections stall rather than reset; callers
+// close them. The token bounds waiting for a concurrent start; the key
+// is already refused if that wait fails, so retrying finishes the job.
+func DenyClient(id, token Handle, text string) error {
+	var pub key.NodePublic
+	if err := pub.UnmarshalText([]byte(text)); err != nil || pub.IsZero() {
+		return ErrArgument
+	}
+	return use[*server](id, token, func(ctx context.Context, e *entry, s *server) error {
+		s.deny(pub)
+		// Start sets up the backend DisconnectClient reads; wait it out
+		// so a client admitted during startup is dropped too.
+		if err := s.gate.lock(ctx); err != nil {
+			return err
+		}
+		defer s.gate.unlock()
+		if s.started {
+			s.server.DisconnectClient(pub)
+		}
 		return nil
 	})
 }

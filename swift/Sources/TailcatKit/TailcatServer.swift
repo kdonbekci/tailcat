@@ -63,12 +63,28 @@ public actor TailcatServer {
         }
     }
 
-    /// Restricts future registrations to the allowlist. Existing flows remain.
+    /// Restricts future registrations to the allowlist. Existing flows remain;
+    /// use ``deny(_:)`` to remove a key.
     public func allow(_ key: NodePublicKey) async throws {
         let raw = try handle.value()
         try await Blocking.run { token in
             try key.rawValue.withCInput { key in
                 try CAPI.check { tc_server_allow_client(raw, token, key, $0) }
+            }
+        }
+    }
+
+    /// Removes a key from the allowlist and disconnects that client.
+    ///
+    /// The server stays restricted to the allowlist, so denying the last key
+    /// admits nobody. The client's open connections are not reset: they stall,
+    /// so close them (``Connection/peerKey`` names each accepted connection's
+    /// client). The key connects again only after ``allow(_:)``.
+    public func deny(_ key: NodePublicKey) async throws {
+        let raw = try handle.value()
+        try await Blocking.run { token in
+            try key.rawValue.withCInput { key in
+                try CAPI.check { tc_server_deny_client(raw, token, key, $0) }
             }
         }
     }

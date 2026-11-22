@@ -64,7 +64,7 @@ public actor TailcatClient {
         return try await Blocking.run(timeout: timeout) { token in
             var connection: UInt64 = 0
             try CAPI.check { tc_client_dial(raw, token, port, Int32(TC_TCP), &connection, $0) }
-            return try Connection.adopt(connection, token: token)
+            return try Connection.adopt(connection)
         }
     }
 

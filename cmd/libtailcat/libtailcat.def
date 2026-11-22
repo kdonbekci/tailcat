@@ -29,6 +29,7 @@ tc_info
 tc_key_generate
 tc_listener_accept
 tc_server_allow_client
+tc_server_deny_client
 tc_server_listen
 tc_server_new
 tc_server_start

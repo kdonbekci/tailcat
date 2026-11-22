@@ -232,6 +232,11 @@ func tc_server_allow_client(id C.tc_handle, token C.tc_token, pub *C.char, err *
 	return guard(err, func() error { return capi.AllowClient(capi.Handle(id), capi.Handle(token), C.GoString(pub)) })
 }
 
+//export tc_server_deny_client
+func tc_server_deny_client(id C.tc_handle, token C.tc_token, pub *C.char, err **C.char) C.int32_t {
+	return guard(err, func() error { return capi.DenyClient(capi.Handle(id), capi.Handle(token), C.GoString(pub)) })
+}
+
 //export tc_drain
 func tc_drain(id C.tc_handle, token C.tc_token, err **C.char) C.int32_t {
 	return guard(err, func() error { return capi.Drain(capi.Handle(id), capi.Handle(token)) })

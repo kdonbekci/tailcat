@@ -5,6 +5,7 @@ package capi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -28,7 +29,7 @@ func testToken(t *testing.T, timeout time.Duration) Handle {
 func testPipe(t *testing.T) (Handle, net.Conn) {
 	t.Helper()
 	a, b := net.Pipe()
-	h, err := register(newConnection(a, TCP), 0)
+	h, err := register(newConnection(a, TCP, key.NodePublic{}), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,5 +194,76 @@ func TestNewServerRejectsOverflowingUDPIdleTimeout(t *testing.T) {
 	cfg := fmt.Sprintf(`{"udp_idle_timeout":%v}`, tooBig)
 	if _, err := NewServer(cfg); !errors.Is(err, ErrArgument) {
 		t.Fatalf("NewServer(%s) err = %v, want ErrArgument", cfg, err)
+	}
+}
+
+// TestDenyClientKeepsAdmissionRestricted checks that denying a key
+// never reopens admission: removing the last key admits nobody, and
+// denying on a server with an empty allowlist restricts it.
+func TestDenyClientKeepsAdmissionRestricted(t *testing.T) {
+	k1, k2 := key.NewNode().Public(), key.NewNode().Public()
+	admits := func(h Handle, k key.NodePublic) bool {
+		t.Helper()
+		var ok bool
+		if err := use[*server](h, NoCancel, func(ctx context.Context, e *entry, s *server) error {
+			ok = s.server.AllowClient(k)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+
+	listed, err := NewServer(fmt.Sprintf(`{"allowed_clients":[%q]}`, k1.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(listed)
+	// The server has not started, so there is no client to disconnect.
+	if err := DenyClient(listed, NoCancel, k1.String()); err != nil {
+		t.Fatal(err)
+	}
+	if admits(listed, k1) || admits(listed, k2) {
+		t.Errorf("after denying the last key: admits k1, k2 = %v, %v; want false, false", admits(listed, k1), admits(listed, k2))
+	}
+	if err := AllowClient(listed, NoCancel, k1.String()); err != nil {
+		t.Fatal(err)
+	}
+	if !admits(listed, k1) {
+		t.Errorf("k1 not admitted after being allowed again")
+	}
+
+	open, err := NewServer(`{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(open)
+	if err := DenyClient(open, NoCancel, k2.String()); err != nil {
+		t.Fatal(err)
+	}
+	if admits(open, k1) || admits(open, k2) {
+		t.Errorf("after a deny on an open server: admits k1, k2 = %v, %v; want false, false", admits(open, k1), admits(open, k2))
+	}
+
+	if err := DenyClient(open, NoCancel, "nodekey:zz"); !errors.Is(err, ErrArgument) {
+		t.Errorf("DenyClient with a malformed key = %v; want ErrArgument", err)
+	}
+}
+
+// TestInfoOmitsUnknownPeerPublicKey checks that a connection whose peer
+// key is unknown has no peer_public_key in its info, rather than an
+// empty or zero key.
+func TestInfoOmitsUnknownPeerPublicKey(t *testing.T) {
+	h, _ := testPipe(t)
+	text, err := Info(h, NoCancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(text), &m); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := m["peer_public_key"]; ok {
+		t.Errorf("info = %s; has peer_public_key %v, want it omitted", text, got)
 	}
 }
